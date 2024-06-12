@@ -1,5 +1,7 @@
 package me.alex_s168
 
+import blitz.collections.contents
+
 enum class Component(val inPortCount: Int, val outPortCount: Int) {
     NAND(2, 1),
     NOT(1, 1),
@@ -42,7 +44,13 @@ data class Wire(
         WireEnd(to, toPort)
 }
 
-data class WireEnd(val node: Node, val port: Int)
+data class WireEnd(
+    val node: Node,
+    val port: Int
+) {
+    override fun toString() =
+        "${node.id}[$port]"
+}
 
 abstract class Node(val id: Int) {
     var wires = mutableSetOf<Wire>()
@@ -86,6 +94,9 @@ abstract class Node(val id: Int) {
     }
 
     val ports = Ports(this)
+
+    open fun inputs(): List<WireEnd> =
+        emptyList()
 }
 
 class ValueNode(
@@ -101,7 +112,12 @@ class ComponentNode(
     val component: Component
 ): Node(idIn) {
     override fun toString() =
-        "$id = $component"
+        "$id = $component(${inputs().joinToString()})"
+
+    override fun inputs() = wires
+        .map { if (it.to == this) it else it.swap() }
+        .filter { it.toPort < this.component.inPortCount }
+        .map { it.from() }
 }
 
 class InNode(
@@ -117,7 +133,10 @@ class OutNode(
     val outPortCount: Int
 ): Node(idIn) {
     override fun toString() =
-        "$id = output"
+        "$id = output(${inputs().joinToString()})"
+
+    override fun inputs() = wires
+        .map { if (it.to == this) it.from() else it.to() }
 }
 
 class Net(inputIn: InNode, outputIn: OutNode) {
@@ -172,12 +191,6 @@ class Net(inputIn: InNode, outputIn: OutNode) {
             sb.append(node.toString())
             sb.appendLine()
         }
-        sb.append("wires:\n")
-        allWires.forEach { wire ->
-            sb.append("  ")
-            sb.append(wire.toString())
-            sb.appendLine()
-        }
         return sb.toString()
     }
 
@@ -190,18 +203,18 @@ class Net(inputIn: InNode, outputIn: OutNode) {
     fun expandIter(from: Component?, platformSupportedComponents: List<Component>, newId: () -> Int) {
         val kill = mutableListOf<Node>()
         val add = mutableListOf<Node>()
-        allNodes.forEach { node ->
+        for (node in allNodes) {
             if (node is ComponentNode) {
                 if (node.component !in platformSupportedComponents && (from ?: node) == node) {
                     kill.add(node)
                     when (node.component) {
                         Component.NOT -> {
-                            val i = node.ports.inp(0)
+                            val i = node.ports.inp(0)!!
                             val o = node.ports.out(1)
 
                             val nand = ComponentNode(newId(), Component.NAND)
-                            nand.ports[0] = i?.from()
-                            nand.ports[1] = i?.from()
+                            nand.ports[0] = i.from()
+                            nand.ports[1] = i.from()
 
                             o.forEach {
                                 nand.ports[2] = WireEnd(it.to, it.toPort)
@@ -211,13 +224,15 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                         }
 
                         Component.AND -> {
-                            val i0 = node.ports.inp(0)
-                            val i1 = node.ports.inp(1)
+                            val i0 = node.ports.inp(0)!!
+                            val i1 = node.ports.inp(1)!!
                             val o = node.ports.out(2)
 
                             val nand = ComponentNode(newId(), Component.NAND)
-                            nand.ports[0] = i0?.from()
-                            nand.ports[1] = i1?.from()
+                            nand.ports[0] = i0.from()
+                            nand.ports[1] = i1.from()
+
+                            add.add(nand)
 
                             val not = ComponentNode(newId(), Component.NOT)
                             not.ports[0] = WireEnd(nand, 2)
@@ -235,8 +250,10 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                             val o = node.ports.out(2)
 
                             val and = ComponentNode(newId(), Component.AND)
-                            and.ports[0] = i0?.from()
-                            and.ports[1] = i1?.from()
+                            and.ports[0] = i0!!.from()
+                            and.ports[1] = i1!!.from()
+
+                            add.add(and)
 
                             val not = ComponentNode(newId(), Component.NOT)
                             not.ports[0] = WireEnd(and, 2)
@@ -249,17 +266,21 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                         }
 
                         Component.XOR -> {
-                            val i0 = node.ports.inp(0)
-                            val i1 = node.ports.inp(1)
+                            val i0 = node.ports.inp(0)!!
+                            val i1 = node.ports.inp(1)!!
                             val o = node.ports.out(2)
 
                             val nand = ComponentNode(newId(), Component.NAND)
-                            nand.ports[0] = i0?.from()
-                            nand.ports[1] = i1?.from()
+                            nand.ports[0] = i0.from()
+                            nand.ports[1] = i1.from()
+
+                            add.add(nand)
 
                             val or = ComponentNode(newId(), Component.OR)
-                            or.ports[0] = i0?.from()
-                            or.ports[1] = i1?.from()
+                            or.ports[0] = i0.from()
+                            or.ports[1] = i1.from()
+
+                            add.add(or)
 
                             val and = ComponentNode(newId(), Component.AND)
                             and.ports[0] = WireEnd(nand, 2)
@@ -273,19 +294,23 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                         }
 
                         Component.OR -> {
-                            val i0 = node.ports.inp(0)
-                            val i1 = node.ports.inp(1)
+                            val i0 = node.ports.inp(0)!!
+                            val i1 = node.ports.inp(1)!!
                             val o = node.ports.out(2)
 
                             val not0 = ComponentNode(newId(), Component.NOT)
-                            not0.ports[0] = i0?.from()
+                            not0.ports[0] = i0.from()
+
+                            add.add(not0)
 
                             val not1 = ComponentNode(newId(), Component.NOT)
-                            not1.ports[0] = i1?.from()
+                            not1.ports[0] = i1.from()
+
+                            add.add(not1)
 
                             val nand = ComponentNode(newId(), Component.NAND)
                             nand.ports[0] = WireEnd(not0, 1)
-                            nand.ports[1] = WireEnd(not0, 1)
+                            nand.ports[1] = WireEnd(not1, 1)
 
                             o.forEach {
                                 nand.ports[2] = WireEnd(it.to, it.toPort)
@@ -295,14 +320,14 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                         }
 
                         Component.HALF_ADD -> {
-                            val i0 = node.ports.inp(0)
-                            val i1 = node.ports.inp(1)
+                            val i0 = node.ports.inp(0)!!
+                            val i1 = node.ports.inp(1)!!
                             val sum = node.ports.out(2)
                             val carr = node.ports.out(3)
 
                             val xor = ComponentNode(newId(), Component.XOR)
-                            xor.ports[0] = i0?.from()
-                            xor.ports[1] = i1?.from()
+                            xor.ports[0] = i0.from()
+                            xor.ports[1] = i1.from()
 
                             sum.forEach {
                                 xor.ports[2] = WireEnd(it.to, it.toPort)
@@ -311,8 +336,8 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                             add.add(xor)
 
                             val and = ComponentNode(newId(), Component.AND)
-                            and.ports[0] = i0?.from()
-                            and.ports[1] = i1?.from()
+                            and.ports[0] = i0.from()
+                            and.ports[1] = i1.from()
 
                             carr.forEach {
                                 and.ports[2] = WireEnd(it.to, it.toPort)
@@ -322,23 +347,27 @@ class Net(inputIn: InNode, outputIn: OutNode) {
                         }
 
                         Component.FULL_ADD -> {
-                            val i0 = node.ports.inp(0)
-                            val i1 = node.ports.inp(1)
-                            val i2 = node.ports.inp(2)
+                            val i0 = node.ports.inp(0)!!
+                            val i1 = node.ports.inp(1)!!
+                            val i2 = node.ports.inp(2)!!
                             val sum = node.ports.out(3)
                             val carr = node.ports.out(4)
 
                             val ha0 = ComponentNode(newId(), Component.HALF_ADD)
-                            ha0.ports[0] = i0?.from()
-                            ha0.ports[1] = i1?.from()
+                            ha0.ports[0] = i0.from()
+                            ha0.ports[1] = i1.from()
+
+                            add.add(ha0)
 
                             val ha1 = ComponentNode(newId(), Component.HALF_ADD)
-                            ha1.ports[0] = i2?.from()
+                            ha1.ports[0] = i2.from()
                             ha1.ports[1] = WireEnd(ha0, 2)
 
                             sum.forEach {
                                 ha1.ports[2] = WireEnd(it.to, it.toPort)
                             }
+
+                            add.add(ha1)
 
                             val or = ComponentNode(newId(), Component.OR)
                             or.ports[0] = WireEnd(ha0, 3)
@@ -353,6 +382,7 @@ class Net(inputIn: InNode, outputIn: OutNode) {
 
                         else -> error("don't know how to expand ${node.component} to $platformSupportedComponents")
                     }
+                    break
                 }
             }
         }
@@ -362,6 +392,44 @@ class Net(inputIn: InNode, outputIn: OutNode) {
         add.forEach {
             addNodeRec(it)
         }
+    }
+
+    fun check() {
+        allNodes.forEach { node ->
+            when (node) {
+                is ComponentNode -> {
+                    require(node.inputs().size == node.component.inPortCount) {
+                        "failed on $node"
+                    }
+                }
+            }
+        }
+    }
+
+    fun computeLayers(): List<List<Node>> {
+        val layers = mutableListOf<List<Node>>()
+        val remNodes = allNodes.toMutableList()
+
+        while (remNodes.isNotEmpty()) {
+            val layer = mutableListOf<Node>()
+
+            remNodes.toList().forEach { node ->
+                val inputs = node.inputs()
+
+                if (inputs.all { i -> layers.any { i.node in it } }) {
+                    remNodes.remove(node)
+                    layer.add(node)
+                }
+            }
+
+            if (layer.isEmpty() && remNodes.isNotEmpty()) {
+                error("recursive dependency detected in ${remNodes.contents}")
+            }
+
+            layers.add(layer)
+        }
+
+        return layers
     }
 }
 
@@ -388,4 +456,16 @@ fun main() {
     net.expandOpt(null, listOf(Component.NAND)) { id ++ }
 
     println(net)
+    println()
+
+    net.check()
+
+    val layers = net.computeLayers()
+
+    layers.forEachIndexed { index, nodes ->
+        println("layer $index:")
+        nodes.forEach {
+            println("  $it")
+        }
+    }
 }
