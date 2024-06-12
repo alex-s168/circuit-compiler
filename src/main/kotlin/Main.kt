@@ -1,6 +1,7 @@
 package me.alex_s168
 
 import blitz.collections.contents
+import blitz.str.MutMultiLineString
 
 enum class Component(val inPortCount: Int, val outPortCount: Int) {
     NAND(2, 1),
@@ -97,6 +98,12 @@ abstract class Node(val id: Int) {
 
     open fun inputs(): List<WireEnd> =
         emptyList()
+
+    open fun outputs(): List<WireEnd> =
+        inputs().let { inp ->
+            wires.filter { it.from() !in inp && it.to() !in inp }
+        }
+        .map { if (it.from == this) it.from() else it.to() }
 }
 
 class ValueNode(
@@ -433,6 +440,23 @@ class Net(inputIn: InNode, outputIn: OutNode) {
     }
 }
 
+fun List<List<Node>>.optimizeLayers(): List<List<Node>> {
+    val ports = mutableMapOf<WireEnd, Int>()
+    return map { row ->
+        val sort = row.sortedBy {
+            it.inputs()
+                .map { ports[it] ?: 0 }
+                .average()
+        }
+        sort.forEachIndexed { index, node ->
+            node.outputs().forEach {
+                ports[it] = index
+            }
+        }
+        sort
+    }
+}
+
 fun main() {
     var id = 0
 
@@ -460,7 +484,9 @@ fun main() {
 
     net.check()
 
-    val layers = net.computeLayers()
+    val layers = net
+        .computeLayers()
+        .optimizeLayers()
 
     layers.forEachIndexed { index, nodes ->
         println("layer $index:")
