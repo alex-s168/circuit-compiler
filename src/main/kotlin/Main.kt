@@ -1,6 +1,8 @@
 package me.alex_s168
 
+import blitz.collections.Matrix
 import blitz.collections.contents
+import blitz.logic.then
 import blitz.str.MutMultiLineString
 
 enum class Component(val inPortCount: Int, val outPortCount: Int) {
@@ -440,21 +442,110 @@ class Net(inputIn: InNode, outputIn: OutNode) {
     }
 }
 
-fun List<List<Node>>.optimizeLayers(): List<List<Node>> {
-    val ports = mutableMapOf<WireEnd, Int>()
-    return map { row ->
-        val sort = row.sortedBy {
-            it.inputs()
-                .map { ports[it] ?: 0 }
-                .average()
-        }
-        sort.forEachIndexed { index, node ->
-            node.outputs().forEach {
-                ports[it] = index
+data class CoreExecConfig(
+    val exec: MutableList<Node>
+) {
+    override fun toString() =
+        exec.joinToString("\n")
+}
+
+fun List<List<Node>>.optimizeLayers(maxUnitCompute: Int): Matrix<CoreExecConfig> {
+    val mat = Matrix(maxOf { it.size }, size) { _, _ -> CoreExecConfig(mutableListOf()) }
+
+    forEachIndexed { row, nodes ->
+        nodes.forEach { node ->
+            val deps = node.inputs()
+            val placed = mat
+                .elementsWithIndexes()
+                .find {
+                    (node) -> deps.any { dep ->
+                        node.exec.any {
+                            it.wires.any { it.from() == dep || it.to() == dep }
+                        }
+                    }
+                }
+                ?.let { (_, loc) ->
+                    (mat[loc.first, row].exec.size < maxUnitCompute).then {
+                        mat[loc.first, row].exec.add(node)
+                    }
+                }
+                ?: false
+            if (!placed) {
+                val col = mat.rows[row].indexOfFirst { it.exec.size < maxUnitCompute }
+                mat[col, row].exec.add(node)
             }
         }
-        sort
     }
+
+    return mat
+}
+
+data class CoreConfig(
+    val localNodes: MutableSet<Int>
+) {
+    override fun toString(): String {
+        val sb = StringBuilder()
+        sb.appendLine("Core:")
+        localNodes.forEach { v ->
+            sb.appendLine("local $v")
+        }
+        return sb.toString()
+    }
+}
+
+data class Layout(
+    val configs: List<CoreConfig>,
+    val layers: Matrix<CoreExecConfig>,
+    val globals: MutableSet<Int>,
+) {
+    init {
+        require(configs.size == layers.width)
+    }
+
+    override fun toString(): String {
+        val mat = Matrix(layers.width, layers.height + 1) { x, y ->
+            if (y == 0) configs[x].toString()
+            else layers[x, y - 1].toString()
+        }
+
+        val sb = StringBuilder()
+        sb.appendLine("LAYOUT")
+        sb.appendLine("globals: ${globals.joinToString()}\n")
+        sb.append(mat)
+
+        return sb.toString()
+    }
+}
+
+fun Matrix<CoreExecConfig>.allVarUsages(): Sequence<Pair<Int, Pair<Int, Int>>> =
+    elementsWithIndexes()
+        .flatMap { (x, pos) -> x.exec.flatMap { it.inputs().map { it.node.id to pos } } }
+
+fun Matrix<CoreExecConfig>.layout(): Layout {
+    val tra = transposeCopy()
+
+    val allVarsPerCore = tra.rows.map { it.flatMap { it.exec.map { it.id } } }
+    val allVarUsages = allVarUsages()
+
+    val global = mutableSetOf<Int>()
+    val perCore = allVarsPerCore.mapIndexed { col, vars ->
+        val local = mutableSetOf<Int>()
+        vars.forEach { v ->
+            val usages = allVarUsages
+                .filter { it.first == v }
+            if (usages.any { it.second.first != col })
+                global.add(v)
+            else
+                local.add(v)
+        }
+        CoreConfig(local)
+    }
+
+    return Layout(
+        perCore,
+        this,
+        global
+    )
 }
 
 fun main() {
@@ -474,24 +565,14 @@ fun main() {
 
     net.addNodeRec(fa)
 
-    println(net)
-    println()
-
     net.expandOpt(null, listOf(Component.NAND)) { id ++ }
-
-    println(net)
-    println()
 
     net.check()
 
     val layers = net
         .computeLayers()
-        .optimizeLayers()
+        .optimizeLayers(4)
+        .layout()
 
-    layers.forEachIndexed { index, nodes ->
-        println("layer $index:")
-        nodes.forEach {
-            println("  $it")
-        }
-    }
+    println(layers)
 }

@@ -13,10 +13,11 @@ repositories {
     }
 
     mavenCentral()
+    mavenLocal()
 }
 
 dependencies {
-    implementation("me.alex_s168:blitz:0.15")
+    implementation("me.alex_s168:blitz:0.17")
 
     testImplementation(kotlin("test"))
 }
