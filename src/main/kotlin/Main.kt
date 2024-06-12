@@ -1,7 +1,5 @@
 package me.alex_s168
 
-import blitz.str.splitWithNesting
-
 enum class Component(val inPortCount: Int, val outPortCount: Int) {
     NAND(2, 1),
     NOT(1, 1),
@@ -33,6 +31,15 @@ data class Wire(
         from.wires.remove(this)
         to.wires.remove(this)
     }
+
+    fun swap() =
+        Wire(to, toPort, from, fromPort)
+
+    fun from() =
+        WireEnd(from, fromPort)
+
+    fun to() =
+        WireEnd(to, toPort)
 }
 
 data class WireEnd(val node: Node, val port: Int)
@@ -56,11 +63,26 @@ abstract class Node(val id: Int) {
         operator fun set(port: Int, wire: Wire) {
             // shooould check here
             node.wires.add(wire)
+
+            // add to other node
+            if (wire.to == node) {
+                wire.from.wires.add(wire)
+            } else {
+                wire.to.wires.add(wire)
+            }
         }
 
-        operator fun set(port: Int, to: WireEnd) {
-            set(port, Wire(node, port, to.node, to.port))
+        operator fun set(port: Int, to: WireEnd?) {
+            to?.let {
+                set(port, Wire(node, port, it.node, it.port))
+            }
         }
+
+        fun out(port: Int) =
+            node.ports[port].map { if (it.to == node) it.swap() else it }
+
+        fun inp(port: Int) =
+            node.ports[port].firstOrNull()?.let { if (it.from == node) it.swap() else it }
     }
 
     val ports = Ports(this)
@@ -69,22 +91,34 @@ abstract class Node(val id: Int) {
 class ValueNode(
     idIn: Int,
     val value: Boolean
-): Node(idIn)
+): Node(idIn) {
+    override fun toString() =
+        "$id = value($value)"
+}
 
 class ComponentNode(
     idIn: Int,
     val component: Component
-): Node(idIn)
+): Node(idIn) {
+    override fun toString() =
+        "$id = $component"
+}
 
 class InNode(
     idIn: Int,
     val inPortCount: Int
-): Node(idIn)
+): Node(idIn) {
+    override fun toString() =
+        "$id = input"
+}
 
 class OutNode(
     idIn: Int,
     val outPortCount: Int
-): Node(idIn)
+): Node(idIn) {
+    override fun toString() =
+        "$id = output"
+}
 
 class Net(inputIn: InNode, outputIn: OutNode) {
     var input = inputIn
@@ -103,7 +137,7 @@ class Net(inputIn: InNode, outputIn: OutNode) {
 
     fun killNode(node: Node) {
         allNodes.remove(node)
-        node.wires.forEach { it.kill() }
+        node.wires.toList().forEach { it.kill() }
     }
 
     fun addNodeRec(node: Node) {
@@ -132,93 +166,226 @@ class Net(inputIn: InNode, outputIn: OutNode) {
 
     override fun toString(): String {
         val sb = StringBuilder()
+        sb.append("nodes:\n")
+        allNodes.forEach { node ->
+            sb.append("  ")
+            sb.append(node.toString())
+            sb.appendLine()
+        }
+        sb.append("wires:\n")
         allWires.forEach { wire ->
+            sb.append("  ")
             sb.append(wire.toString())
             sb.appendLine()
         }
         return sb.toString()
     }
 
-    fun expand(platformSupportedComponents: List<Component>) {
+    fun expandOpt(from: Component?, platformSupportedComponents: List<Component>, newId: () -> Int) {
+        while (allNodes.any { it is ComponentNode && it.component !in platformSupportedComponents }) {
+            expandIter(from, platformSupportedComponents, newId)
+        }
+    }
 
+    fun expandIter(from: Component?, platformSupportedComponents: List<Component>, newId: () -> Int) {
+        val kill = mutableListOf<Node>()
+        val add = mutableListOf<Node>()
+        allNodes.forEach { node ->
+            if (node is ComponentNode) {
+                if (node.component !in platformSupportedComponents && (from ?: node) == node) {
+                    kill.add(node)
+                    when (node.component) {
+                        Component.NOT -> {
+                            val i = node.ports.inp(0)
+                            val o = node.ports.out(1)
+
+                            val nand = ComponentNode(newId(), Component.NAND)
+                            nand.ports[0] = i?.from()
+                            nand.ports[1] = i?.from()
+
+                            o.forEach {
+                                nand.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(nand)
+                        }
+
+                        Component.AND -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val o = node.ports.out(2)
+
+                            val nand = ComponentNode(newId(), Component.NAND)
+                            nand.ports[0] = i0?.from()
+                            nand.ports[1] = i1?.from()
+
+                            val not = ComponentNode(newId(), Component.NOT)
+                            not.ports[0] = WireEnd(nand, 2)
+
+                            o.forEach {
+                                not.ports[1] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(not)
+                        }
+
+                        Component.NAND -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val o = node.ports.out(2)
+
+                            val and = ComponentNode(newId(), Component.AND)
+                            and.ports[0] = i0?.from()
+                            and.ports[1] = i1?.from()
+
+                            val not = ComponentNode(newId(), Component.NOT)
+                            not.ports[0] = WireEnd(and, 2)
+
+                            o.forEach {
+                                not.ports[1] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(not)
+                        }
+
+                        Component.XOR -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val o = node.ports.out(2)
+
+                            val nand = ComponentNode(newId(), Component.NAND)
+                            nand.ports[0] = i0?.from()
+                            nand.ports[1] = i1?.from()
+
+                            val or = ComponentNode(newId(), Component.OR)
+                            or.ports[0] = i0?.from()
+                            or.ports[1] = i1?.from()
+
+                            val and = ComponentNode(newId(), Component.AND)
+                            and.ports[0] = WireEnd(nand, 2)
+                            and.ports[1] = WireEnd(or, 2)
+
+                            o.forEach {
+                                and.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(and)
+                        }
+
+                        Component.OR -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val o = node.ports.out(2)
+
+                            val not0 = ComponentNode(newId(), Component.NOT)
+                            not0.ports[0] = i0?.from()
+
+                            val not1 = ComponentNode(newId(), Component.NOT)
+                            not1.ports[0] = i1?.from()
+
+                            val nand = ComponentNode(newId(), Component.NAND)
+                            nand.ports[0] = WireEnd(not0, 1)
+                            nand.ports[1] = WireEnd(not0, 1)
+
+                            o.forEach {
+                                nand.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(nand)
+                        }
+
+                        Component.HALF_ADD -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val sum = node.ports.out(2)
+                            val carr = node.ports.out(3)
+
+                            val xor = ComponentNode(newId(), Component.XOR)
+                            xor.ports[0] = i0?.from()
+                            xor.ports[1] = i1?.from()
+
+                            sum.forEach {
+                                xor.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(xor)
+
+                            val and = ComponentNode(newId(), Component.AND)
+                            and.ports[0] = i0?.from()
+                            and.ports[1] = i1?.from()
+
+                            carr.forEach {
+                                and.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(and)
+                        }
+
+                        Component.FULL_ADD -> {
+                            val i0 = node.ports.inp(0)
+                            val i1 = node.ports.inp(1)
+                            val i2 = node.ports.inp(2)
+                            val sum = node.ports.out(3)
+                            val carr = node.ports.out(4)
+
+                            val ha0 = ComponentNode(newId(), Component.HALF_ADD)
+                            ha0.ports[0] = i0?.from()
+                            ha0.ports[1] = i1?.from()
+
+                            val ha1 = ComponentNode(newId(), Component.HALF_ADD)
+                            ha1.ports[0] = i2?.from()
+                            ha1.ports[1] = WireEnd(ha0, 2)
+
+                            sum.forEach {
+                                ha1.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            val or = ComponentNode(newId(), Component.OR)
+                            or.ports[0] = WireEnd(ha0, 3)
+                            or.ports[1] = WireEnd(ha1, 3)
+
+                            carr.forEach {
+                                or.ports[2] = WireEnd(it.to, it.toPort)
+                            }
+
+                            add.add(or)
+                        }
+
+                        else -> error("don't know how to expand ${node.component} to $platformSupportedComponents")
+                    }
+                }
+            }
+        }
+        kill.forEach {
+            killNode(it)
+        }
+        add.forEach {
+            addNodeRec(it)
+        }
     }
 }
 
 fun main() {
-    val code = """
-op (!& w w) w =
-    : err
-    ;
+    var id = 0
 
-op (! w) w =
-    : (!& 0 0)
-    ;
+    val inp = InNode(id ++, 2)
+    val out = OutNode(id ++, 1)
+    val net = Net(inp, out)
 
-op (& w w) w =
-    : (! (!& 0 1))
-    ;
+    val zero = ValueNode(id ++, false)
+    val fa = ComponentNode(id ++, Component.FULL_ADD)
+    fa.ports[0] = WireEnd(inp, 0)
+    fa.ports[1] = WireEnd(inp, 1)
+    fa.ports[2] = WireEnd(zero, 0)
 
-op (| w w) w =
-    : (!& (! 0) (! 1))
-    ;
+    out.ports[0] = WireEnd(fa, 3)
 
-op (!| w w) w =
-    : (! (| 0 1))
-    ;
+    net.addNodeRec(fa)
 
-op (^ w w) w =
-    : (& (| 0 1) (! (& 0 1)))
-    ;
+    println(net)
+    println()
 
-op (ha w w) w w =
-    : {(^ 0 1) (& 0 1)}
-    ;
+    net.expandOpt(null, listOf(Component.NAND)) { id ++ }
 
-op (fa w w w) w w =
-    : s0, c0 = (ha 0 1)
-    : s1, c1 = (ha s0 2)
-    : c = (| c0 c1)
-    : {s1 c}
-    ;
-
-mop (+@T wT wT w) wT w =
-    : c, s = foldl@T 2 0 1 # r, it = (fa it 0 1)
-    : {s c}
-    ;
-
-op (test w8 w8) w8 =
-    : z = always@1 b0
-    : s, c = (+@8 0 1 z)
-    : s
-    ;
-    """
-
-    val blocks = code
-        .replace(Regex("\\R"), "")
-        .split(';')
-        .mapNotNull {
-            val split = it.split('=', limit = 2)
-            split.getOrNull(1)?.let { body ->
-                val (decl) = split
-                val instrs = body.split(':')
-                val declParts = decl.splitWithNesting(' ', '(', ')')
-
-                val declKind = declParts[0].trim()
-                val declArgs = declParts[1].dropLast(1).drop(1).split(' ').map { it.trim() }
-                val declRet = declParts[2].trim()
-
-                instrs.map {
-                    val split = it.trim().split('=', limit = 2)
-                    val (outs, op) = split.getOrNull(1)?.let {
-                        val os = split[0]
-                        os.split(',').map { os.trim() } to it
-                    } ?: (listOf<String>() to split[0])
-
-
-                }
-
-                decl to instrs
-            }
-        }
-    println(blocks)
+    println(net)
 }
